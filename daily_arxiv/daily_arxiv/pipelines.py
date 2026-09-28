@@ -1,32 +1,8 @@
-# Define your item pipelines here
-#
-# Don't forget to add your pipeline to the ITEM_PIPELINES setting
-# See: https://docs.scrapy.org/en/latest/topics/item-pipeline.html
-
-
-# useful for handling different item types with a single interface
-import arxiv
-import json
-import os
-import sys
-from datetime import datetime, timedelta
-
-
 class DailyArxivPipeline:
-    def __init__(self):
-        self.page_size = 100
-        self.client = arxiv.Client(self.page_size)
+    """保留 Scrapy 管道接口，但不再向 export.arxiv.org 发起二次请求。"""
 
     def process_item(self, item: dict, spider):
-        item["pdf"] = f"https://arxiv.org/pdf/{item['id']}"
-        item["abs"] = f"https://arxiv.org/abs/{item['id']}"
-        search = arxiv.Search(
-            id_list=[item["id"]],
-        )
-        paper = next(self.client.results(search))
-        item["authors"] = [a.name for a in paper.authors]
-        item["title"] = paper.title
-        item["categories"] = paper.categories
-        item["comment"] = paper.comment
-        item["summary"] = paper.summary
+        # arXiv 列表页已提供后续 AI 总结所需字段，避免 GitHub Actions 被导出 API 拒绝。
+        item.setdefault("pdf", f"https://arxiv.org/pdf/{item['id']}")
+        item.setdefault("abs", f"https://arxiv.org/abs/{item['id']}")
         return item
