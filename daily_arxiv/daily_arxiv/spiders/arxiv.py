@@ -17,6 +17,14 @@ class ArxivSpider(scrapy.Spider):
     name = "arxiv"  # 爬虫名称
     allowed_domains = ["arxiv.org"]  # 允许爬取的域名
 
+    @staticmethod
+    def _clean_text(selector):
+        """将 arXiv 列表页节点中的换行与空白归一化为普通文本。"""
+        # 列表页中的标题、摘要和注释会被多个 HTML 文本节点拆开，需要合并后再写入 JSONL。
+        return " ".join(
+            text.strip() for text in selector.xpath(".//text()").getall() if text.strip()
+        )
+
     def parse(self, response):
         # 提取每篇论文的信息
         anchors = []
@@ -30,7 +38,7 @@ class ArxivSpider(scrapy.Spider):
             paper_anchor = paper.css("a[name^='item']::attr(name)").get()
             if not paper_anchor:
                 continue
-                
+
             paper_id = int(paper_anchor.split("item")[-1])
             if anchors and paper_id >= anchors[-1]:
                 continue
@@ -39,39 +47,56 @@ class ArxivSpider(scrapy.Spider):
             abstract_link = paper.css("a[title='Abstract']::attr(href)").get()
             if not abstract_link:
                 continue
-                
+
             arxiv_id = abstract_link.split("/")[-1]
-            
-            # 获取对应的论文描述部分 (dd元素)
+
+            # 获取对应的论文描述部分（dd 元素）
             paper_dd = paper.xpath("following-sibling::dd[1]")
             if not paper_dd:
                 continue
-            
-            # 提取论文分类信息 - 在subjects部分
+
+            # 提取论文分类信息，优先读取主分类。
             subjects_text = paper_dd.css(".list-subjects .primary-subject::text").get()
             if not subjects_text:
-                # 如果找不到主分类，尝试其他方式获取分类
-                subjects_text = paper_dd.css(".list-subjects::text").get()
-            
-            if subjects_text:
-                # 解析分类信息，通常格式如 "Computer Vision and Pattern Recognition (cs.CV)"
-                # 提取括号中的分类代码
-                categories_in_paper = re.findall(r'\(([^)]+)\)', subjects_text)
-                
-                # 检查论文分类是否与目标分类有交集
-                paper_categories = set(categories_in_paper)
-                if paper_categories.intersection(self.target_categories):
-                    yield {
-                        "id": arxiv_id,
-                        "categories": list(paper_categories),  # 添加分类信息用于调试
-                    }
-                    self.logger.info(f"Found paper {arxiv_id} with categories {paper_categories}")
-                else:
-                    self.logger.debug(f"Skipped paper {arxiv_id} with categories {paper_categories} (not in target {self.target_categories})")
-            else:
-                # 如果无法获取分类信息，记录警告但仍然返回论文（保持向后兼容）
-                self.logger.warning(f"Could not extract categories for paper {arxiv_id}, including anyway")
-                yield {
-                    "id": arxiv_id,
-                    "categories": [],
-                }
+                subjects_text = self._clean_text(paper_dd.css(".list-subjects"))
+
+            # 从分类文字中提取标准 arXiv 分类代码。
+            categories_in_paper = re.findall(r"\(([^)]+)\)", subjects_text or "")
+            paper_categories = set(categories_in_paper)
+            if subjects_text and not paper_categories.intersection(self.target_categories):
+                self.logger.debug(
+                    f"Skipped paper {arxiv_id} with categories {paper_categories} "
+                    f"(not in target {self.target_categories})"
+                )
+                continue
+
+            # 标题位于列表页中，去除仅供页面展示使用的 "Title:" 前缀。
+            title = re.sub(
+                r"^Title:\s*", "", self._clean_text(paper_dd.css(".list-title"))
+            )
+            # 作者链接逐个对应论文作者，保留页面中的作者排序。
+            authors = [
+                self._clean_text(author) for author in paper_dd.css(".list-authors a")
+            ]
+            # Comments 字段并非每篇论文都有；缺失时使用空字符串保持旧 JSONL 接口稳定。
+            comment = re.sub(
+                r"^Comments:\s*", "", self._clean_text(paper_dd.css(".list-comments"))
+            )
+            # 列表页摘要已包含 arXiv 公开的原始摘要，无需再访问导出 API。
+            summary = self._clean_text(paper_dd.css("p.mathjax"))
+            # 使用页面中的分类顺序去重，避免集合转换造成输出顺序不稳定。
+            ordered_categories = list(dict.fromkeys(categories_in_paper))
+
+            yield {
+                "id": arxiv_id,
+                "pdf": f"https://arxiv.org/pdf/{arxiv_id}",
+                "abs": f"https://arxiv.org/abs/{arxiv_id}",
+                "authors": authors,
+                "title": title,
+                "categories": ordered_categories,
+                "comment": comment,
+                "summary": summary,
+            }
+            self.logger.info(
+                f"Found paper {arxiv_id} with categories {paper_categories}"
+            )
