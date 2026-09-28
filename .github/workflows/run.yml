@@ -16,6 +16,11 @@ jobs:
 
     steps:
     - uses: actions/checkout@v4
+    - name: Restore data branch for deduplication
+      run: |
+        # 历史 JSONL 保存在 data 分支；恢复它们后才能正确排除已发布的论文。
+        git fetch origin data
+        git checkout FETCH_HEAD -- data
     - name: Install dependencies
       run: |
         curl -LsSf https://astral.sh/uv/install.sh | sh
